@@ -1,0 +1,578 @@
+name: 안드로이드 앱 만들기
+
+# 혜광goat 안드로이드 앱(APK)을 만드는 순서표예요. 이 파일 하나에 앱 본체가 다 들어 있어요.
+# index.html을 새로 올리면 앱도 저절로 새로 만들어져요.
+# Actions 탭에서 [Run workflow]를 눌러 직접 만들 수도 있어요.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 가져오기
+        uses: actions/checkout@v4
+
+      - name: 자바 준비
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 그래들 준비
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: 앱 본체 파일 펼치기
+        shell: bash
+        run: |
+          set -e
+          mkdir -p "$(dirname 'android/settings.gradle')"
+          cat > 'android/settings.gradle' <<'GOATEOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "hyegwang-goat-android"
+          include ':app'
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/build.gradle')"
+          cat > 'android/build.gradle' <<'GOATEOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/gradle.properties')"
+          cat > 'android/gradle.properties' <<'GOATEOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/build.gradle')"
+          cat > 'android/app/build.gradle' <<'GOATEOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          // GitHub에서 만들 때마다 번호가 1씩 올라가서, 새 앱을 깔면 예전 앱 위에 바로 덮어 깔려요.
+          def runNumber = (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+
+          android {
+              namespace 'io.github.chiwookhan81.hyegwanggoat'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'io.github.chiwookhan81.hyegwanggoat'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode runNumber
+                  versionName "1.0.${runNumber}"
+              }
+
+              // 시험용 서명 열쇠예요. 플레이스토어에 올릴 때는 따로 만든 열쇠를 써야 해요.
+              signingConfigs {
+                  test {
+                      storeFile file('../signing/test.keystore')
+                      storePassword 'hyegwang'
+                      keyAlias 'hyegwang'
+                      keyPassword 'hyegwang'
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.test
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              lint {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.11.0'
+          }
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/src/main/AndroidManifest.xml')"
+          cat > 'android/app/src/main/AndroidManifest.xml' <<'GOATEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- '움직여 봐요'에서 몸의 움직임을 알아보려고 카메라를 써요. 영상은 저장하거나 보내지 않아요. -->
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-feature android:name="android.hardware.camera" android:required="false" />
+              <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+
+              <!-- 안드로이드 11부터는 이걸 적어 둬야 기기의 한국어 목소리(TTS)를 쓸 수 있어요. -->
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:hardwareAccelerated="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:largeHeap="true"
+                  android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/src/main/java/io/github/chiwookhan81/hyegwanggoat/MainActivity.java')"
+          cat > 'android/app/src/main/java/io/github/chiwookhan81/hyegwanggoat/MainActivity.java' <<'GOATEOF'
+          package io.github.chiwookhan81.hyegwanggoat;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.speech.tts.TextToSpeech;
+          import android.view.View;
+          import android.view.WindowInsets;
+          import android.view.WindowInsetsController;
+          import android.view.WindowManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Toast;
+
+          import androidx.webkit.WebViewAssetLoader;
+
+          import java.util.Arrays;
+          import java.util.Locale;
+
+          /**
+           * 혜광goat 안드로이드 앱.
+           * 앱 안에 넣어 둔 index.html을 웹뷰로 열고, 카메라 권한은 브라우저가 아니라 앱이 직접 받아요.
+           * 주소를 https://appassets.androidplatform.net 으로 열어서 페이지가 '안전한 주소'로 인정받게 해요.
+           * (카메라와 관절 인식기는 안전한 주소에서만 켜져요.)
+           */
+          public class MainActivity extends Activity {
+
+              private static final String HOST = "appassets.androidplatform.net";
+              private static final String START_URL = "https://" + HOST + "/assets/index.html";
+              private static final int REQ_CAMERA = 7;
+
+              private WebView web;
+              private PermissionRequest pendingRequest;
+              private TextToSpeech tts;
+              private volatile boolean ttsReady = false;
+              private long lastBack = 0;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); // 수업 중 화면이 꺼지지 않게
+
+                  web = new WebView(this);
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);                 // 설정 저장(localStorage)
+                  s.setMediaPlaybackRequiresUserGesture(false); // 효과음·카메라 영상이 바로 나오게
+                  s.setAllowFileAccess(false);
+                  s.setAllowContentAccess(false);
+                  s.setSupportZoom(false);
+                  s.setBuiltInZoomControls(false);
+                  s.setDisplayZoomControls(false);
+                  s.setUseWideViewPort(true);
+                  s.setLoadWithOverviewMode(true);
+                  s.setTextZoom(100);                           // 기기 글자 크기 설정에 화면이 깨지지 않게
+
+                  final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                          .setDomain(HOST)
+                          .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                          .build();
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          return loader.shouldInterceptRequest(request.getUrl());
+                      }
+
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          Uri u = request.getUrl();
+                          if (HOST.equals(u.getHost())) return false;
+                          // 앱 밖 주소는 기기 브라우저로 열어요.
+                          try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
+                          return true;
+                      }
+                  });
+
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onPermissionRequest(final PermissionRequest request) {
+                          runOnUiThread(() -> handlePermission(request));
+                      }
+
+                      @Override
+                      public void onPermissionRequestCanceled(PermissionRequest request) {
+                          if (pendingRequest == request) pendingRequest = null;
+                      }
+                  });
+
+                  // 웹뷰에는 브라우저의 '컴퓨터 목소리'가 없어서, 안드로이드 목소리(TTS)로 이어 줘요.
+                  web.addJavascriptInterface(new TtsBridge(), "AndroidTTS");
+                  tts = new TextToSpeech(this, status -> {
+                      if (status == TextToSpeech.SUCCESS) {
+                          int r = tts.setLanguage(Locale.KOREAN);
+                          ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+                      }
+                  });
+
+                  if (savedInstanceState != null) {
+                      web.restoreState(savedInstanceState);
+                  } else {
+                      web.loadUrl(START_URL);
+                  }
+              }
+
+              private void handlePermission(PermissionRequest request) {
+                  boolean wantsCamera = Arrays.asList(request.getResources())
+                          .contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+                  if (!wantsCamera) {
+                      request.deny();
+                      return;
+                  }
+                  if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                      request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                  } else {
+                      pendingRequest = request;
+                      requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+                  if (requestCode != REQ_CAMERA || pendingRequest == null) return;
+                  boolean ok = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+                  if (ok) {
+                      pendingRequest.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                  } else {
+                      pendingRequest.deny();
+                      Toast.makeText(this, "카메라를 허용해야 '움직여 봐요'를 할 수 있어요.", Toast.LENGTH_LONG).show();
+                  }
+                  pendingRequest = null;
+              }
+
+              /** index.html 안의 tts-bridge.js가 부르는 목소리 기능 */
+              private class TtsBridge {
+                  @JavascriptInterface
+                  public boolean ready() {
+                      return ttsReady;
+                  }
+
+                  @JavascriptInterface
+                  public void speak(String text, float rate, float pitch, float volume) {
+                      if (!ttsReady || text == null) return;
+                      tts.setSpeechRate(rate > 0 ? rate : 1f);
+                      tts.setPitch(pitch > 0 ? pitch : 1f);
+                      Bundle p = new Bundle();
+                      p.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, Math.max(0f, Math.min(1f, volume)));
+                      tts.speak(text, TextToSpeech.QUEUE_FLUSH, p, "goat" + System.nanoTime());
+                  }
+
+                  @JavascriptInterface
+                  public void stop() {
+                      if (tts != null) tts.stop();
+                  }
+              }
+
+              // 학생이 실수로 뒤로 가기를 눌러도 바로 닫히지 않게, 두 번 눌러야 닫혀요.
+              @Override
+              public void onBackPressed() {
+                  long now = System.currentTimeMillis();
+                  if (now - lastBack < 2000) {
+                      super.onBackPressed();
+                  } else {
+                      lastBack = now;
+                      Toast.makeText(this, "한 번 더 누르면 앱이 닫혀요.", Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              // 위아래 안드로이드 막대를 숨겨 화면을 꽉 채워요. (가장자리에서 밀면 잠깐 나와요)
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) hideSystemBars();
+              }
+
+              @SuppressWarnings("deprecation")
+              private void hideSystemBars() {
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      WindowInsetsController c = getWindow().getInsetsController();
+                      if (c != null) {
+                          c.hide(WindowInsets.Type.systemBars());
+                          c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                      }
+                  } else {
+                      getWindow().getDecorView().setSystemUiVisibility(
+                              View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                      | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                      | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                      | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+                  }
+              }
+
+              @Override
+              protected void onSaveInstanceState(Bundle outState) {
+                  super.onSaveInstanceState(outState);
+                  web.saveState(outState);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  web.onResume();
+              }
+
+              @Override
+              protected void onPause() {
+                  if (tts != null) tts.stop();
+                  web.onPause();
+                  super.onPause();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (tts != null) tts.shutdown();
+                  if (web != null) web.destroy();
+                  super.onDestroy();
+              }
+          }
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/src/main/assets/tts-bridge.js')"
+          cat > 'android/app/src/main/assets/tts-bridge.js' <<'GOATEOF'
+          // 혜광goat 앱용: 웹뷰의 브라우저 '컴퓨터 목소리'(speechSynthesis)는 소리가 나지 않아서
+          // 안드로이드 목소리(TTS)로 바꿔 이어 줍니다. 앱 밖(크롬 등)에서는 아무 일도 하지 않아요.
+          (function () {
+            if (!window.AndroidTTS) return;
+            var voices = [{ name: 'Android 한국어', lang: 'ko-KR', default: true, localService: true, voiceURI: 'android-tts' }];
+            function Utterance(text) {
+              this.text = text || ''; this.lang = 'ko-KR'; this.voice = null;
+              this.rate = 1; this.pitch = 1; this.volume = 1;
+            }
+            var synth = {
+              speaking: false, pending: false, paused: false, onvoiceschanged: null,
+              getVoices: function () { return voices; },
+              speak: function (u) {
+                try {
+                  var v = (u.volume == null) ? 1 : Number(u.volume);
+                  window.AndroidTTS.speak(String(u.text || ''), Number(u.rate) || 1, Number(u.pitch) || 1, isNaN(v) ? 1 : v);
+                } catch (e) { }
+              },
+              cancel: function () { try { window.AndroidTTS.stop(); } catch (e) { } },
+              pause: function () { }, resume: function () { },
+              addEventListener: function () { }, removeEventListener: function () { }
+            };
+            try {
+              Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true, writable: true });
+              Object.defineProperty(window, 'SpeechSynthesisUtterance', { value: Utterance, configurable: true, writable: true });
+            } catch (e) {
+              window.speechSynthesis = synth;
+              window.SpeechSynthesisUtterance = Utterance;
+            }
+          })();
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/src/main/res/values/strings.xml')"
+          cat > 'android/app/src/main/res/values/strings.xml' <<'GOATEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">혜광goat</string>
+          </resources>
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/src/main/res/values/colors.xml')"
+          cat > 'android/app/src/main/res/values/colors.xml' <<'GOATEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#7FB4E6</color>
+          </resources>
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml')"
+          cat > 'android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml' <<'GOATEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+          </adaptive-icon>
+          GOATEOF
+
+          mkdir -p android/signing
+          base64 -d > android/signing/test.keystore <<'GOATEOF'
+          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
+          q0IzJz+n2dlS5gICJxA=
+          GOATEOF
+
+      - name: 앱 안에 혜광goat 넣고 아이콘 만들기
+        shell: bash
+        run: |
+          pip install --quiet pillow
+          python3 - <<'GOATEOF'
+          import pathlib, re, base64, io, sys
+          from PIL import Image, ImageDraw
+          root = pathlib.Path('.')
+          html = (root/'index.html').read_text(encoding='utf-8')
+          # 1) 앱 안에 혜광goat 넣기 (+ 목소리 연결 스크립트)
+          m = re.search(r'<head[^>]*>', html, re.I)
+          if not m: sys.exit('index.html에서 <head>를 찾지 못했어요.')
+          out = html[:m.end()] + '\n<script src="tts-bridge.js"></script>' + html[m.end():]
+          a = root/'android/app/src/main/assets'; a.mkdir(parents=True, exist_ok=True)
+          (a/'index.html').write_text(out, encoding='utf-8')
+          print('앱 안에 넣음:', (a/'index.html').stat().st_size, 'bytes')
+          # 2) 월이 그림으로 아이콘 만들기
+          mm = re.search(r'["\']?c_wol_cheer["\']?\s*:\s*["\']data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', html)
+          img = Image.open(io.BytesIO(base64.b64decode(mm.group(1)))).convert('RGBA')
+          crop = img.crop((0, 0, img.width, int(img.height*0.62))); crop = crop.crop(crop.getbbox())
+          BG = (127, 180, 230, 255)
+          def fg(size, scale):
+              c = Image.new('RGBA', (size, size), (0, 0, 0, 0)); t = int(size*scale)
+              r = min(t/crop.width, t/crop.height)
+              k = crop.resize((int(crop.width*r), int(crop.height*r)), Image.LANCZOS)
+              c.paste(k, ((size-k.width)//2, (size-k.height)//2), k); return c
+          res = root/'android/app/src/main/res'
+          for d, s in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
+              (res/f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
+              S = s*4; im = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+              ImageDraw.Draw(im).rounded_rectangle([0, 0, S-1, S-1], radius=int(S*0.22), fill=BG)
+              im.alpha_composite(fg(S, 0.82))
+              im.resize((s, s), Image.LANCZOS).save(res/f'mipmap-{d}/ic_launcher.png')
+              A = int(s*108/48)
+              fg(A*4, 0.60).resize((A, A), Image.LANCZOS).save(res/f'mipmap-{d}/ic_launcher_foreground.png')
+          print('아이콘 완성')
+          GOATEOF
+
+      - name: APK 만들기
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: 파일 이름 정리
+        run: cp android/app/build/outputs/apk/release/app-release.apk hyegwang-goat.apk
+
+      - name: 내려받기 칸에 올리기
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk
+          name: 혜광goat 안드로이드 앱
+          make_latest: true
+          body: |
+            전자칠판·태블릿에 까는 혜광goat 시험용 앱이에요. (만든 번호: ${{ github.run_number }})
+            아래 hyegwang-goat.apk를 기기에서 내려받아 설치하세요.
+          files: hyegwang-goat.apk
+
+      - name: 작업 결과에도 남기기
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyegwang-goat-apk
+          path: hyegwang-goat.apk
