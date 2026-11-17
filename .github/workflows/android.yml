@@ -2,7 +2,7 @@ name: 안드로이드 앱 만들기
 
 # 혜광goat 안드로이드 앱(APK)을 만드는 순서표예요. 이 파일 하나에 앱 본체가 다 들어 있어요.
 # index.html을 새로 올리면 앱도 저절로 새로 만들어져요.
-# Actions 탭에서 [Run workflow]를 눌러 직접 만들 수도 있어요.
+# 칠판처럼 웹 엔진이 오래된 기기(크롬 83)에서도 돌아가게, 앱에 넣을 때 자동으로 바꿔 넣어요.
 on:
   push:
     branches: [main]
@@ -126,6 +126,98 @@ jobs:
           dependencies {
               implementation 'androidx.webkit:webkit:1.11.0'
           }
+          GOATEOF
+
+          mkdir -p "$(dirname 'android/prepare.py')"
+          cat > 'android/prepare.py' <<'GOATEOF'
+          # 앱 만들기 준비: 저장소의 index.html(혜광goat)을 오래된 웹 엔진(크롬 83)에서도 돌아가게 바꿔
+          # 앱 안(assets)에 넣고, 월이 그림으로 아이콘을 만들어요.
+          #   사용법: python3 prepare.py <index.html> <assets폴더> <res폴더> <esbuild실행파일> <tasks-vision폴더>
+          import base64, gzip, io, pathlib, re, subprocess, sys
+
+          src, assets, res, esbuild, mpdir = sys.argv[1:6]
+          assets = pathlib.Path(assets); res = pathlib.Path(res); mpdir = pathlib.Path(mpdir)
+          html = pathlib.Path(src).read_text(encoding='utf-8')
+          T = 'chrome83'
+
+          def esb(code, loader, extra=()):
+              r = subprocess.run([esbuild, '--loader=' + loader, '--target=' + T, '--log-level=error', '--charset=utf8', *extra],
+                                 input=code.encode('utf-8'), capture_output=True)
+              if r.returncode:
+                  sys.exit('esbuild 오류: ' + r.stderr.decode('utf-8', 'replace')[:2000])
+              return r.stdout.decode('utf-8')
+
+          def pack(b):  # gzip → base64 (혜광goat가 쓰는 방식 그대로)
+              return base64.b64encode(gzip.compress(b, 9)).decode()
+
+          def unpack(t):
+              return gzip.decompress(base64.b64decode(t))
+
+          # 1) CSS: inset 같은 새 속성을 옛 방식으로 바꿔요.
+          html = re.sub(r'(<style[^>]*>)(.*?)(</style>)',
+                        lambda m: m.group(1) + esb(m.group(2), 'css') + m.group(3), html, flags=re.S)
+          print('CSS 바꿈, 남은 inset:', len(re.findall(r'(?<![\w-])inset\s*:', ''.join(re.findall(r'<style[^>]*>(.*?)</style>', html, re.S)))))
+
+          # 2) 화면 프로그램(일반 script): 새 문법을 옛 문법으로 바꿔요.
+          def fix_script(m):
+              attrs, body = m.group(1), m.group(2)
+              if 'type=' in attrs and 'javascript' not in attrs:
+                  return m.group(0)  # text/plain 같은 데이터 칸은 그대로
+              if not body.strip():
+                  return m.group(0)
+              return '<script' + attrs + '>' + esb(body, 'js') + '</script>'
+          html = re.sub(r'<script([^>]*)>(.*?)</script>', fix_script, html, flags=re.S)
+
+          # 3) 몸 관절 인식기(MediaPipe): 새 문법을 바꾸고, SIMD 없는 wasm으로 갈아 끼워요.
+          def swap(id_, new_text):
+              global html
+              pat = re.compile(r'(<script[^>]*id="' + id_ + r'"[^>]*>)\s*[A-Za-z0-9+/=\s]+(</script>)')
+              if not pat.search(html):
+                  sys.exit(id_ + ' 칸을 찾지 못했어요.')
+              html = pat.sub(lambda m: m.group(1) + new_text + m.group(2), html, count=1)
+
+          def get(id_):
+              m = re.search(r'<script[^>]*id="' + id_ + r'"[^>]*>\s*([A-Za-z0-9+/=\s]+)</script>', html)
+              return unpack(m.group(1))
+
+          bundle = get('mp_b').decode('utf-8')
+          swap('mp_b', pack(esb(bundle, 'js', ['--format=esm']).encode('utf-8')))
+          wasm_dir = mpdir / 'wasm'
+          loader_ns = (wasm_dir / 'vision_wasm_nosimd_internal.js').read_text(encoding='utf-8')
+          wasm_ns = (wasm_dir / 'vision_wasm_nosimd_internal.wasm').read_bytes()
+          swap('mp_l', pack(esb(loader_ns, 'js').encode('utf-8')))
+          swap('mp_w', pack(wasm_ns))
+          print('인식기 바꿈: SIMD 없는 wasm', len(wasm_ns), 'bytes')
+
+          # 4) 맨 앞에 옛 엔진 보충 + 목소리 연결을 끼워 넣어요.
+          m = re.search(r'<head[^>]*>', html, re.I)
+          if not m:
+              sys.exit('index.html에서 <head>를 찾지 못했어요.')
+          html = html[:m.end()] + '\n<script src="compat.js"></script><script src="tts-bridge.js"></script>' + html[m.end():]
+          assets.mkdir(parents=True, exist_ok=True)
+          (assets / 'index.html').write_text(html, encoding='utf-8')
+          print('앱 안에 넣음:', (assets / 'index.html').stat().st_size, 'bytes')
+
+          # 5) 월이 그림으로 아이콘 만들기
+          from PIL import Image, ImageDraw
+          mm = re.search(r'["\']?c_wol_cheer["\']?\s*:\s*["\']data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', html)
+          img = Image.open(io.BytesIO(base64.b64decode(mm.group(1)))).convert('RGBA')
+          crop = img.crop((0, 0, img.width, int(img.height * 0.62))); crop = crop.crop(crop.getbbox())
+          BG = (127, 180, 230, 255)
+          def fg(size, scale):
+              c = Image.new('RGBA', (size, size), (0, 0, 0, 0)); t = int(size * scale)
+              r = min(t / crop.width, t / crop.height)
+              k = crop.resize((int(crop.width * r), int(crop.height * r)), Image.LANCZOS)
+              c.paste(k, ((size - k.width) // 2, (size - k.height) // 2), k); return c
+          for d, s in {'mdpi': 48, 'hdpi': 72, 'xhdpi': 96, 'xxhdpi': 144, 'xxxhdpi': 192}.items():
+              (res / f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
+              S = s * 4; im = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+              ImageDraw.Draw(im).rounded_rectangle([0, 0, S - 1, S - 1], radius=int(S * 0.22), fill=BG)
+              im.alpha_composite(fg(S, 0.82))
+              im.resize((s, s), Image.LANCZOS).save(res / f'mipmap-{d}/ic_launcher.png')
+              A = int(s * 108 / 48)
+              fg(A * 4, 0.60).resize((A, A), Image.LANCZOS).save(res / f'mipmap-{d}/ic_launcher_foreground.png')
+          print('아이콘 완성')
           GOATEOF
 
           mkdir -p "$(dirname 'android/app/src/main/AndroidManifest.xml')"
@@ -439,6 +531,64 @@ jobs:
           })();
           GOATEOF
 
+          mkdir -p "$(dirname 'android/app/src/main/assets/compat.js')"
+          cat > 'android/app/src/main/assets/compat.js' <<'GOATEOF'
+          // 혜광goat 앱용: 오래된 웹 엔진(칠판의 크롬 83 등)에서도 돌아가게 빈 기능을 채워 줘요.
+          (function () {
+            // 1) 둥근 네모 그리기(roundRect)는 크롬 99부터 있어요. 없으면 직접 그려 줘요.
+            var P = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+            function rr(x, y, w, h, r) {
+              if (r == null) r = 0;
+              if (typeof r === 'object' && r.length != null) r = r.length ? r[0] : 0;
+              if (typeof r === 'object' && r && 'x' in r) r = r.x;
+              r = Math.max(0, Math.min(+r || 0, Math.abs(w) / 2, Math.abs(h) / 2));
+              this.moveTo(x + r, y);
+              this.lineTo(x + w - r, y);
+              this.arcTo(x + w, y, x + w, y + r, r);
+              this.lineTo(x + w, y + h - r);
+              this.arcTo(x + w, y + h, x + w - r, y + h, r);
+              this.lineTo(x + r, y + h);
+              this.arcTo(x, y + h, x, y + h - r, r);
+              this.lineTo(x, y + r);
+              this.arcTo(x, y, x + r, y, r);
+              this.closePath();
+              return this;
+            }
+            if (P && !P.roundRect) P.roundRect = rr;
+            if (window.Path2D && !Path2D.prototype.roundRect) Path2D.prototype.roundRect = rr;
+            if (window.OffscreenCanvasRenderingContext2D && !OffscreenCanvasRenderingContext2D.prototype.roundRect)
+              OffscreenCanvasRenderingContext2D.prototype.roundRect = rr;
+
+            // 2) 시험판: 오류가 나면 화면 아래에 작게 띄워요. (누르면 사라져요)
+            var box = null, shown = 0;
+            function report(msg) {
+              if (shown >= 5) return; shown++;
+              try {
+                if (!box) {
+                  box = document.createElement('div');
+                  box.style.cssText = 'position:fixed;left:8px;bottom:8px;max-width:70%;z-index:2147483647;' +
+                    'background:rgba(180,20,40,.92);color:#fff;font:14px/1.4 sans-serif;padding:8px 12px;border-radius:10px;white-space:pre-wrap';
+                  box.onclick = function () { box.style.display = 'none'; };
+                  (document.body || document.documentElement).appendChild(box);
+                }
+                box.style.display = 'block';
+                box.textContent = (box.textContent ? box.textContent + '\n' : '오류 (사진 찍어 보내 주세요):\n') + String(msg).slice(0, 200);
+              } catch (e) { }
+            }
+            window.addEventListener('error', function (e) {
+              report((e.message || '오류') + (e.lineno ? ' @' + e.lineno : ''));
+            });
+            window.addEventListener('unhandledrejection', function (e) {
+              var r = e.reason; report('약속 오류: ' + (r && (r.message || r)) );
+            });
+            var cw = console.warn;
+            console.warn = function () {
+              try { if (arguments[0] === 'pose') report('인식기: ' + (arguments[1] && (arguments[1].message || arguments[1]))); } catch (e) { }
+              return cw.apply(console, arguments);
+            };
+          })();
+          GOATEOF
+
           mkdir -p "$(dirname 'android/app/src/main/res/values/strings.xml')"
           cat > 'android/app/src/main/res/values/strings.xml' <<'GOATEOF'
           <?xml version="1.0" encoding="utf-8"?>
@@ -515,43 +665,19 @@ jobs:
           q0IzJz+n2dlS5gICJxA=
           GOATEOF
 
-      - name: 앱 안에 혜광goat 넣고 아이콘 만들기
+      - name: 바꾸는 도구 받기 (esbuild, SIMD 없는 몸 인식기)
         shell: bash
         run: |
+          set -e
+          npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/tools" esbuild@0.24.0 @mediapipe/tasks-vision@0.10.14
+          ls "$RUNNER_TEMP/tools/node_modules/@mediapipe/tasks-vision/wasm"
           pip install --quiet pillow
-          python3 - <<'GOATEOF'
-          import pathlib, re, base64, io, sys
-          from PIL import Image, ImageDraw
-          root = pathlib.Path('.')
-          html = (root/'index.html').read_text(encoding='utf-8')
-          # 1) 앱 안에 혜광goat 넣기 (+ 목소리 연결 스크립트)
-          m = re.search(r'<head[^>]*>', html, re.I)
-          if not m: sys.exit('index.html에서 <head>를 찾지 못했어요.')
-          out = html[:m.end()] + '\n<script src="tts-bridge.js"></script>' + html[m.end():]
-          a = root/'android/app/src/main/assets'; a.mkdir(parents=True, exist_ok=True)
-          (a/'index.html').write_text(out, encoding='utf-8')
-          print('앱 안에 넣음:', (a/'index.html').stat().st_size, 'bytes')
-          # 2) 월이 그림으로 아이콘 만들기
-          mm = re.search(r'["\']?c_wol_cheer["\']?\s*:\s*["\']data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)', html)
-          img = Image.open(io.BytesIO(base64.b64decode(mm.group(1)))).convert('RGBA')
-          crop = img.crop((0, 0, img.width, int(img.height*0.62))); crop = crop.crop(crop.getbbox())
-          BG = (127, 180, 230, 255)
-          def fg(size, scale):
-              c = Image.new('RGBA', (size, size), (0, 0, 0, 0)); t = int(size*scale)
-              r = min(t/crop.width, t/crop.height)
-              k = crop.resize((int(crop.width*r), int(crop.height*r)), Image.LANCZOS)
-              c.paste(k, ((size-k.width)//2, (size-k.height)//2), k); return c
-          res = root/'android/app/src/main/res'
-          for d, s in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
-              (res/f'mipmap-{d}').mkdir(parents=True, exist_ok=True)
-              S = s*4; im = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-              ImageDraw.Draw(im).rounded_rectangle([0, 0, S-1, S-1], radius=int(S*0.22), fill=BG)
-              im.alpha_composite(fg(S, 0.82))
-              im.resize((s, s), Image.LANCZOS).save(res/f'mipmap-{d}/ic_launcher.png')
-              A = int(s*108/48)
-              fg(A*4, 0.60).resize((A, A), Image.LANCZOS).save(res/f'mipmap-{d}/ic_launcher_foreground.png')
-          print('아이콘 완성')
-          GOATEOF
+
+      - name: 앱 안에 혜광goat 넣기 (옛 엔진용으로 바꾸기) + 아이콘
+        shell: bash
+        run: |
+          python3 android/prepare.py index.html android/app/src/main/assets android/app/src/main/res \
+            "$RUNNER_TEMP/tools/node_modules/.bin/esbuild" "$RUNNER_TEMP/tools/node_modules/@mediapipe/tasks-vision"
 
       - name: APK 만들기
         working-directory: android
